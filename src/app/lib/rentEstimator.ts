@@ -9,13 +9,54 @@ export interface Building {
   units: RentalUnit[];
 }
 
+export type Direction = "南" | "南東" | "南西" | "東" | "西" | "北東" | "北西" | "北";
+
 export interface RentalUnit {
   layout: string; // 1K, 1LDK, 2LDK, etc.
   area: number; // m²
   floor: number;
   rent: number; // 万円
   managementFee: number; // 管理費（円）
+  separateBathToilet: boolean; // バストイレ別
+  direction: Direction; // 向き
 }
+
+export interface SearchCondition {
+  minArea: number | null; // 最小面積 m²
+  maxTotalCost: number | null; // 家賃+管理費の上限（万円）
+  separateBathToilet: boolean; // バストイレ別必須
+  goodSunlight: boolean; // 日当たり良好（南向き系）
+}
+
+const GOOD_SUNLIGHT_DIRECTIONS: Direction[] = ["南", "南東", "南西"];
+
+const DIRECTIONS: Direction[] = ["南", "南東", "南西", "東", "西", "北東", "北西", "北"];
+
+export function unitMatchesCondition(unit: RentalUnit, cond: SearchCondition): boolean {
+  if (cond.minArea !== null && unit.area < cond.minArea) return false;
+  if (cond.maxTotalCost !== null) {
+    const totalCost = unit.rent + unit.managementFee / 10000;
+    if (totalCost > cond.maxTotalCost) return false;
+  }
+  if (cond.separateBathToilet && !unit.separateBathToilet) return false;
+  if (cond.goodSunlight && !GOOD_SUNLIGHT_DIRECTIONS.includes(unit.direction)) return false;
+  return true;
+}
+
+export function buildingHasMatchingUnit(building: Building, cond: SearchCondition): boolean {
+  return building.units.some((u) => unitMatchesCondition(u, cond));
+}
+
+export function getMatchingUnits(building: Building, cond: SearchCondition): RentalUnit[] {
+  return building.units.filter((u) => unitMatchesCondition(u, cond));
+}
+
+export const DEFAULT_CONDITION: SearchCondition = {
+  minArea: null,
+  maxTotalCost: null,
+  separateBathToilet: false,
+  goodSunlight: false,
+};
 
 const LAYOUT_BASE_AREA: Record<string, number> = {
   "1R": 18,
@@ -240,7 +281,16 @@ export function generateNearbyBuildings(
           ? Math.round((3000 + random() * 7000) / 100) * 100
           : Math.round((1000 + random() * 4000) / 100) * 100;
 
-      units.push({ layout, area, floor, rent, managementFee });
+      // バストイレ別: タワマンはほぼ確実、マンションは高確率、アパートは半々
+      const separateRate =
+        type === "tower" ? 0.95 : type === "mansion" ? 0.75 : 0.4;
+      const separateBathToilet = random() < separateRate;
+
+      // 向き: ランダムだが南向き系はやや少なめ（人気で埋まりやすい想定）
+      const dirIndex = Math.floor(random() * DIRECTIONS.length);
+      const direction = DIRECTIONS[dirIndex];
+
+      units.push({ layout, area, floor, rent, managementFee, separateBathToilet, direction });
     }
 
     units.sort((a, b) => a.rent - b.rent);

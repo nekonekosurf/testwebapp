@@ -10,8 +10,17 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
-import { Building, generateNearbyBuildings, formatRent } from "../lib/rentEstimator";
+import {
+  Building,
+  SearchCondition,
+  DEFAULT_CONDITION,
+  generateNearbyBuildings,
+  formatRent,
+  buildingHasMatchingUnit,
+  getMatchingUnits,
+} from "../lib/rentEstimator";
 import BuildingPopup from "./BuildingPopup";
+import SearchPanel from "./SearchPanel";
 
 // Leafletのデフォルトアイコン問題を修正
 let iconsFixed = false;
@@ -32,8 +41,8 @@ function fixLeafletIcons() {
 // アイコンキャッシュ
 const iconCache = new Map<string, L.DivIcon>();
 
-function createBuildingIcon(type: Building["type"], rentMin: number) {
-  const key = `${type}-${rentMin}`;
+function createBuildingIcon(type: Building["type"], rentMin: number, dimmed: boolean) {
+  const key = `${type}-${rentMin}-${dimmed}`;
   const cached = iconCache.get(key);
   if (cached) return cached;
 
@@ -60,6 +69,7 @@ function createBuildingIcon(type: Building["type"], rentMin: number) {
         box-shadow: 0 2px 6px rgba(0,0,0,0.3);
         text-align: center;
         line-height: 1.3;
+        opacity: ${dimmed ? "0.3" : "1"};
       ">
         ${rentLabel}~
       </div>
@@ -114,12 +124,21 @@ function MapFollower({
   useEffect(() => {
     if (!shouldFollow) return;
     const now = Date.now();
-    if (now - lastMoveRef.current < 2000) return; // 2秒に1回まで
+    if (now - lastMoveRef.current < 2000) return;
     lastMoveRef.current = now;
     map.setView([lat, lng], map.getZoom(), { animate: true, duration: 0.5 });
   }, [lat, lng, shouldFollow, map]);
 
   return null;
+}
+
+function isConditionActive(cond: SearchCondition): boolean {
+  return (
+    cond.minArea !== null ||
+    cond.maxTotalCost !== null ||
+    cond.separateBathToilet ||
+    cond.goodSunlight
+  );
 }
 
 interface RentMapProps {
@@ -130,9 +149,7 @@ interface RentMapProps {
 
 export default function RentMap({ latitude, longitude, accuracy }: RentMapProps) {
   const [followUser, setFollowUser] = useState(true);
-  const [selectedType, setSelectedType] = useState<
-    "all" | "tower" | "mansion" | "apartment"
-  >("all");
+  const [condition, setCondition] = useState<SearchCondition>(DEFAULT_CONDITION);
 
   useEffect(() => {
     fixLeafletIcons();
@@ -147,79 +164,80 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
     [snappedLat, snappedLng]
   );
 
-  const filteredBuildings = useMemo(
-    () =>
-      selectedType === "all"
-        ? buildings
-        : buildings.filter((b) => b.type === selectedType),
-    [buildings, selectedType]
-  );
+  const filtering = isConditionActive(condition);
+
+  // 条件に合致する部屋がある建物
+  const matchedBuildingIds = useMemo(() => {
+    if (!filtering) return null;
+    const ids = new Set<string>();
+    for (const b of buildings) {
+      if (buildingHasMatchingUnit(b, condition)) {
+        ids.add(b.id);
+      }
+    }
+    return ids;
+  }, [buildings, condition, filtering]);
+
+  const matchCount = matchedBuildingIds?.size ?? buildings.length;
+
+  // 建物アイコンをメモ化（条件フィルタのdimmed状態を含む）
+  const buildingIcons = useMemo(() => {
+    const map = new Map<string, L.DivIcon>();
+    for (const b of buildings) {
+      const dimmed = filtering && !(matchedBuildingIds?.has(b.id));
+      if (filtering && matchedBuildingIds?.has(b.id)) {
+        // 条件合致する部屋の最安値を表示
+        const matchingUnits = getMatchingUnits(b, condition);
+        const minRent = Math.min(...matchingUnits.map((u) => u.rent));
+        map.set(b.id, createBuildingIcon(b.type, minRent, false));
+      } else {
+        const minRent = Math.min(...b.units.map((u) => u.rent));
+        map.set(b.id, createBuildingIcon(b.type, minRent, dimmed));
+      }
+    }
+    return map;
+  }, [buildings, filtering, matchedBuildingIds, condition]);
 
   const stats = useMemo(() => {
     if (buildings.length === 0) return null;
+    if (filtering && matchedBuildingIds) {
+      const matchedBuildings = buildings.filter((b) => matchedBuildingIds.has(b.id));
+      if (matchedBuildings.length === 0) return null;
+      const matchedRents = matchedBuildings.flatMap((b) =>
+        getMatchingUnits(b, condition).map((u) => u.rent)
+      );
+      if (matchedRents.length === 0) return null;
+      return {
+        min: Math.min(...matchedRents),
+        max: Math.max(...matchedRents),
+        avg: matchedRents.reduce((a, b) => a + b, 0) / matchedRents.length,
+      };
+    }
     const allRents = buildings.flatMap((b) => b.units.map((u) => u.rent));
     return {
       min: Math.min(...allRents),
       max: Math.max(...allRents),
       avg: allRents.reduce((a, b) => a + b, 0) / allRents.length,
-      count: buildings.length,
     };
-  }, [buildings]);
-
-  // 建物アイコンをメモ化
-  const buildingIcons = useMemo(() => {
-    const map = new Map<string, L.DivIcon>();
-    for (const b of buildings) {
-      const minRent = Math.min(...b.units.map((u) => u.rent));
-      map.set(b.id, createBuildingIcon(b.type, minRent));
-    }
-    return map;
-  }, [buildings]);
+  }, [buildings, filtering, matchedBuildingIds, condition]);
 
   const userIcon = useMemo(() => createUserIcon(), []);
 
   return (
     <div className="flex flex-col h-full">
+      {/* 検索パネル */}
+      <SearchPanel
+        condition={condition}
+        onChange={setCondition}
+        matchCount={matchCount}
+        totalCount={buildings.length}
+      />
+
       {/* フィルターバー */}
       <div className="bg-white/95 backdrop-blur-sm border-b px-3 py-2 flex gap-2 overflow-x-auto flex-shrink-0 z-10">
-        {(
-          [
-            { key: "all", label: "すべて", color: "gray" },
-            { key: "tower", label: "タワマン", color: "purple" },
-            { key: "mansion", label: "マンション", color: "blue" },
-            { key: "apartment", label: "アパート", color: "green" },
-          ] as const
-        ).map(({ key, label, color }) => (
-          <button
-            key={key}
-            onClick={() => setSelectedType(key)}
-            className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-              selectedType === key
-                ? `bg-${color}-600 text-white shadow-md`
-                : `bg-${color}-50 text-${color}-700 hover:bg-${color}-100`
-            }`}
-            style={
-              selectedType === key
-                ? {
-                    backgroundColor:
-                      color === "gray"
-                        ? "#4b5563"
-                        : color === "purple"
-                        ? "#7c3aed"
-                        : color === "blue"
-                        ? "#2563eb"
-                        : "#16a34a",
-                    color: "white",
-                  }
-                : {}
-            }
-          >
-            {label}
-          </button>
-        ))}
         <button
           onClick={() => setFollowUser(!followUser)}
-          className={`ml-auto px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
+          className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
             followUser
               ? "bg-blue-600 text-white"
               : "bg-gray-100 text-gray-600"
@@ -227,6 +245,11 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
         >
           {followUser ? "追従中" : "追従OFF"}
         </button>
+        {filtering && (
+          <span className="px-3 py-1 text-xs text-orange-600 font-medium">
+            {matchCount}件ヒット / {buildings.length}件中
+          </span>
+        )}
       </div>
 
       {/* 地図 */}
@@ -277,14 +300,14 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
           </Marker>
 
           {/* 建物マーカー */}
-          {filteredBuildings.map((building) => (
+          {buildings.map((building) => (
             <Marker
               key={building.id}
               position={[building.lat, building.lng]}
               icon={buildingIcons.get(building.id)!}
             >
-              <Popup maxWidth={300} minWidth={240}>
-                <BuildingPopup building={building} />
+              <Popup maxWidth={320} minWidth={260}>
+                <BuildingPopup building={building} condition={condition} />
               </Popup>
             </Marker>
           ))}
@@ -296,9 +319,9 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
         <div className="bg-white/95 backdrop-blur-sm border-t px-4 py-3 flex-shrink-0">
           <div className="flex items-center justify-between text-xs">
             <div className="text-center">
-              <p className="text-gray-400">周辺物件</p>
+              <p className="text-gray-400">{filtering ? "該当物件" : "周辺物件"}</p>
               <p className="font-bold text-gray-800 text-sm">
-                {filteredBuildings.length}件
+                {matchCount}件
               </p>
             </div>
             <div className="text-center">
@@ -320,6 +343,15 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 条件に合致する物件がない場合 */}
+      {filtering && matchCount === 0 && (
+        <div className="bg-orange-50 border-t border-orange-200 px-4 py-2 flex-shrink-0">
+          <p className="text-xs text-orange-700 text-center">
+            この条件に合致する物件が周辺にありません。条件を緩めてみてください。
+          </p>
         </div>
       )}
     </div>
