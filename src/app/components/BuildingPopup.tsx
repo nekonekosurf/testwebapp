@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Building,
   SearchCondition,
@@ -8,6 +9,7 @@ import {
   unitMatchesCondition,
   DEFAULT_CONDITION,
 } from "../lib/rentEstimator";
+import FloorPlan from "./FloorPlan";
 
 interface BuildingPopupProps {
   building: Building;
@@ -24,8 +26,10 @@ export default function BuildingPopup({ building, condition }: BuildingPopupProp
     cond.separateBathToilet ||
     cond.goodSunlight;
 
+  const [expandedUnit, setExpandedUnit] = useState<number | null>(null);
+
   return (
-    <div className="min-w-[240px]">
+    <div className="min-w-[260px]">
       <h3 className="font-bold text-base mb-1 text-gray-900">
         {building.name}
       </h3>
@@ -45,49 +49,81 @@ export default function BuildingPopup({ building, condition }: BuildingPopupProp
       </div>
 
       <div className="border-t pt-2">
-        <p className="text-xs text-gray-500 mb-1">推定家賃</p>
+        <p className="text-xs text-gray-500 mb-1">
+          推定家賃
+          <span className="text-gray-400 ml-1">（タップで間取り図）</span>
+        </p>
         {building.units.map((unit, i) => {
           const matches = unitMatchesCondition(unit, cond);
           const totalCost = unit.rent + unit.managementFee / 10000;
+          const isExpanded = expandedUnit === i;
           return (
             <div
               key={i}
-              className={`py-1.5 border-b border-gray-100 last:border-0 ${
+              className={`border-b border-gray-100 last:border-0 ${
                 isFiltering && !matches ? "opacity-30" : ""
               }`}
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium text-gray-700">
-                    {unit.layout}
-                  </span>
+              <button
+                type="button"
+                className="w-full text-left py-1.5 cursor-pointer hover:bg-gray-50 transition-colors rounded"
+                onClick={() => setExpandedUnit(isExpanded ? null : i)}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <svg
+                      className={`w-3 h-3 text-gray-400 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span className="text-sm font-medium text-gray-700">
+                      {unit.layout}
+                    </span>
+                    <span className="text-xs text-gray-400">
+                      {unit.area}m² / {unit.floor}F
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-sm font-bold text-orange-600">
+                      {formatRent(unit.rent)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-0.5 pl-4">
+                  <div className="flex gap-1 flex-wrap">
+                    <UnitBadge
+                      label={unit.direction + "向き"}
+                      active={["南", "南東", "南西"].includes(unit.direction)}
+                      color="yellow"
+                    />
+                    <UnitBadge
+                      label={unit.separateBathToilet ? "BT別" : "ユニット"}
+                      active={unit.separateBathToilet}
+                      color="cyan"
+                    />
+                  </div>
                   <span className="text-xs text-gray-400">
-                    {unit.area}m² / {unit.floor}F
+                    計 {totalCost.toFixed(1)}万
                   </span>
                 </div>
-                <div className="text-right">
-                  <span className="text-sm font-bold text-orange-600">
-                    {formatRent(unit.rent)}
-                  </span>
+              </button>
+
+              {/* 間取り図（展開時） */}
+              {isExpanded && (
+                <div className="pb-2 pt-1 px-1">
+                  <div className="bg-gray-50 rounded-lg p-2 border border-gray-200">
+                    <FloorPlan
+                      layout={unit.layout}
+                      area={unit.area}
+                      separateBathToilet={unit.separateBathToilet}
+                      direction={unit.direction}
+                    />
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center justify-between mt-0.5">
-                <div className="flex gap-1 flex-wrap">
-                  <UnitBadge
-                    label={unit.direction + "向き"}
-                    active={["南", "南東", "南西"].includes(unit.direction)}
-                    color="yellow"
-                  />
-                  <UnitBadge
-                    label={unit.separateBathToilet ? "BT別" : "ユニット"}
-                    active={unit.separateBathToilet}
-                    color="cyan"
-                  />
-                </div>
-                <span className="text-xs text-gray-400">
-                  計 {totalCost.toFixed(1)}万
-                </span>
-              </div>
+              )}
             </div>
           );
         })}
