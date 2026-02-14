@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -14,7 +14,10 @@ import { Building, generateNearbyBuildings, formatRent } from "../lib/rentEstima
 import BuildingPopup from "./BuildingPopup";
 
 // Leafletのデフォルトアイコン問題を修正
+let iconsFixed = false;
 function fixLeafletIcons() {
+  if (iconsFixed) return;
+  iconsFixed = true;
   delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
   L.Icon.Default.mergeOptions({
     iconRetinaUrl:
@@ -26,7 +29,14 @@ function fixLeafletIcons() {
   });
 }
 
+// アイコンキャッシュ
+const iconCache = new Map<string, L.DivIcon>();
+
 function createBuildingIcon(type: Building["type"], rentMin: number) {
+  const key = `${type}-${rentMin}`;
+  const cached = iconCache.get(key);
+  if (cached) return cached;
+
   const colors = {
     tower: { bg: "#7c3aed", border: "#6d28d9" },
     mansion: { bg: "#2563eb", border: "#1d4ed8" },
@@ -35,7 +45,7 @@ function createBuildingIcon(type: Building["type"], rentMin: number) {
   const { bg, border } = colors[type];
   const rentLabel = formatRent(rentMin);
 
-  return L.divIcon({
+  const icon = L.divIcon({
     className: "custom-building-marker",
     html: `
       <div style="
@@ -58,10 +68,14 @@ function createBuildingIcon(type: Building["type"], rentMin: number) {
     iconAnchor: [40, 28],
     popupAnchor: [0, -30],
   });
+  iconCache.set(key, icon);
+  return icon;
 }
 
+let userIconInstance: L.DivIcon | null = null;
 function createUserIcon() {
-  return L.divIcon({
+  if (userIconInstance) return userIconInstance;
+  userIconInstance = L.divIcon({
     className: "user-location-marker",
     html: `
       <div style="
@@ -76,9 +90,15 @@ function createUserIcon() {
     iconSize: [18, 18],
     iconAnchor: [9, 9],
   });
+  return userIconInstance;
 }
 
-// ユーザーの位置に追従するコンポーネント
+// 座標をグリッドにスナップ（約100m単位）
+function snapToGrid(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+// ユーザーの位置に追従するコンポーネント（スロットル付き）
 function MapFollower({
   lat,
   lng,
@@ -89,11 +109,14 @@ function MapFollower({
   shouldFollow: boolean;
 }) {
   const map = useMap();
+  const lastMoveRef = useRef(0);
 
   useEffect(() => {
-    if (shouldFollow) {
-      map.setView([lat, lng], map.getZoom(), { animate: true });
-    }
+    if (!shouldFollow) return;
+    const now = Date.now();
+    if (now - lastMoveRef.current < 2000) return; // 2秒に1回まで
+    lastMoveRef.current = now;
+    map.setView([lat, lng], map.getZoom(), { animate: true, duration: 0.5 });
   }, [lat, lng, shouldFollow, map]);
 
   return null;
@@ -115,15 +138,22 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
     fixLeafletIcons();
   }, []);
 
+  // 座標をグリッドにスナップして、微小な移動では建物を再生成しない
+  const snappedLat = useMemo(() => snapToGrid(latitude), [latitude]);
+  const snappedLng = useMemo(() => snapToGrid(longitude), [longitude]);
+
   const buildings = useMemo(
-    () => generateNearbyBuildings(latitude, longitude, 0.005, 20),
-    [latitude, longitude]
+    () => generateNearbyBuildings(snappedLat, snappedLng, 0.005, 20),
+    [snappedLat, snappedLng]
   );
 
-  const filteredBuildings =
-    selectedType === "all"
-      ? buildings
-      : buildings.filter((b) => b.type === selectedType);
+  const filteredBuildings = useMemo(
+    () =>
+      selectedType === "all"
+        ? buildings
+        : buildings.filter((b) => b.type === selectedType),
+    [buildings, selectedType]
+  );
 
   const stats = useMemo(() => {
     if (buildings.length === 0) return null;
@@ -135,6 +165,18 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
       count: buildings.length,
     };
   }, [buildings]);
+
+  // 建物アイコンをメモ化
+  const buildingIcons = useMemo(() => {
+    const map = new Map<string, L.DivIcon>();
+    for (const b of buildings) {
+      const minRent = Math.min(...b.units.map((u) => u.rent));
+      map.set(b.id, createBuildingIcon(b.type, minRent));
+    }
+    return map;
+  }, [buildings]);
+
+  const userIcon = useMemo(() => createUserIcon(), []);
 
   return (
     <div className="flex flex-col h-full">
@@ -221,7 +263,7 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
           )}
 
           {/* ユーザー位置マーカー */}
-          <Marker position={[latitude, longitude]} icon={createUserIcon()}>
+          <Marker position={[latitude, longitude]} icon={userIcon}>
             <Popup>
               <div className="text-center">
                 <p className="font-bold text-sm">現在地</p>
@@ -239,10 +281,7 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
             <Marker
               key={building.id}
               position={[building.lat, building.lng]}
-              icon={createBuildingIcon(
-                building.type,
-                Math.min(...building.units.map((u) => u.rent))
-              )}
+              icon={buildingIcons.get(building.id)!}
             >
               <Popup maxWidth={300} minWidth={240}>
                 <BuildingPopup building={building} />
