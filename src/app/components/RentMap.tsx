@@ -28,6 +28,7 @@ import {
 } from "../lib/routing";
 import BuildingPopup from "./BuildingPopup";
 import SearchPanel from "./SearchPanel";
+import PhotoSearch from "./PhotoSearch";
 
 // Leafletのデフォルトアイコン問題を修正
 let iconsFixed = false;
@@ -202,6 +203,9 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
   const [followUser, setFollowUser] = useState(true);
   const [condition, setCondition] = useState<SearchCondition>(DEFAULT_CONDITION);
 
+  // 写真検索の状態
+  const [photoMatchIds, setPhotoMatchIds] = useState<Set<string> | null>(null);
+
   // 道案内の状態
   const [navTarget, setNavTarget] = useState<Building | null>(null);
   const [route, setRoute] = useState<RouteResult | null>(null);
@@ -239,18 +243,20 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
   const buildingIcons = useMemo(() => {
     const map = new Map<string, L.DivIcon>();
     for (const b of buildings) {
-      const dimmed = filtering && !(matchedBuildingIds?.has(b.id));
+      const dimmedByFilter = filtering && !(matchedBuildingIds?.has(b.id));
+      const dimmedByPhoto = photoMatchIds !== null && !photoMatchIds.has(b.id);
+      const dimmed = dimmedByFilter || dimmedByPhoto;
       if (filtering && matchedBuildingIds?.has(b.id)) {
         const matchingUnits = getMatchingUnits(b, condition);
         const minRent = Math.min(...matchingUnits.map((u) => u.rent));
-        map.set(b.id, createBuildingIcon(b.type, minRent, false));
+        map.set(b.id, createBuildingIcon(b.type, minRent, dimmedByPhoto));
       } else {
         const minRent = Math.min(...b.units.map((u) => u.rent));
         map.set(b.id, createBuildingIcon(b.type, minRent, dimmed));
       }
     }
     return map;
-  }, [buildings, filtering, matchedBuildingIds, condition]);
+  }, [buildings, filtering, matchedBuildingIds, condition, photoMatchIds]);
 
   const stats = useMemo(() => {
     if (buildings.length === 0) return null;
@@ -370,9 +376,19 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
             >
               {followUser ? "追従中" : "追従OFF"}
             </button>
+            <PhotoSearch
+              buildings={buildings}
+              onResults={setPhotoMatchIds}
+              onClear={() => setPhotoMatchIds(null)}
+            />
             {filtering && (
               <span className="px-3 py-1 text-xs text-orange-600 font-medium">
                 {matchCount}件ヒット / {buildings.length}件中
+              </span>
+            )}
+            {photoMatchIds && (
+              <span className="px-3 py-1 text-xs text-purple-600 font-medium">
+                写真: {photoMatchIds.size}件
               </span>
             )}
           </div>
