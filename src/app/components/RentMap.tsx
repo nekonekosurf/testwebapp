@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   MapContainer,
   TileLayer,
   Marker,
   Popup,
   Circle,
+  Polyline,
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
@@ -19,6 +20,12 @@ import {
   buildingHasMatchingUnit,
   getMatchingUnits,
 } from "../lib/rentEstimator";
+import {
+  RouteResult,
+  fetchWalkingRoute,
+  formatDistance,
+  formatDuration,
+} from "../lib/routing";
 import BuildingPopup from "./BuildingPopup";
 import SearchPanel from "./SearchPanel";
 
@@ -103,6 +110,35 @@ function createUserIcon() {
   return userIconInstance;
 }
 
+let destIconInstance: L.DivIcon | null = null;
+function createDestIcon() {
+  if (destIconInstance) return destIconInstance;
+  destIconInstance = L.divIcon({
+    className: "dest-marker",
+    html: `
+      <div style="
+        width: 28px;
+        height: 28px;
+        background: #ef4444;
+        border: 3px solid white;
+        border-radius: 50%;
+        box-shadow: 0 0 0 2px #ef4444, 0 2px 8px rgba(0,0,0,0.3);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1">
+          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+          <circle cx="12" cy="10" r="3" fill="#ef4444" stroke="white" stroke-width="2"/>
+        </svg>
+      </div>
+    `,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+  return destIconInstance;
+}
+
 // 座標をグリッドにスナップ（約100m単位）
 function snapToGrid(value: number): number {
   return Math.round(value * 1000) / 1000;
@@ -132,6 +168,21 @@ function MapFollower({
   return null;
 }
 
+// ルート表示時にルート全体が見えるようにフィット
+function RouteFitter({ route }: { route: RouteResult }) {
+  const map = useMap();
+  const fitted = useRef(false);
+
+  useEffect(() => {
+    if (fitted.current) return;
+    fitted.current = true;
+    const bounds = L.latLngBounds(route.coordinates.map((c) => [c[0], c[1]]));
+    map.fitBounds(bounds, { padding: [40, 40], animate: true });
+  }, [route, map]);
+
+  return null;
+}
+
 function isConditionActive(cond: SearchCondition): boolean {
   return (
     cond.minArea !== null ||
@@ -151,6 +202,12 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
   const [followUser, setFollowUser] = useState(true);
   const [condition, setCondition] = useState<SearchCondition>(DEFAULT_CONDITION);
 
+  // 道案内の状態
+  const [navTarget, setNavTarget] = useState<Building | null>(null);
+  const [route, setRoute] = useState<RouteResult | null>(null);
+  const [navLoading, setNavLoading] = useState(false);
+  const [navError, setNavError] = useState<string | null>(null);
+
   useEffect(() => {
     fixLeafletIcons();
   }, []);
@@ -166,7 +223,6 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
 
   const filtering = isConditionActive(condition);
 
-  // 条件に合致する部屋がある建物
   const matchedBuildingIds = useMemo(() => {
     if (!filtering) return null;
     const ids = new Set<string>();
@@ -180,13 +236,11 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
 
   const matchCount = matchedBuildingIds?.size ?? buildings.length;
 
-  // 建物アイコンをメモ化（条件フィルタのdimmed状態を含む）
   const buildingIcons = useMemo(() => {
     const map = new Map<string, L.DivIcon>();
     for (const b of buildings) {
       const dimmed = filtering && !(matchedBuildingIds?.has(b.id));
       if (filtering && matchedBuildingIds?.has(b.id)) {
-        // 条件合致する部屋の最安値を表示
         const matchingUnits = getMatchingUnits(b, condition);
         const minRent = Math.min(...matchingUnits.map((u) => u.rent));
         map.set(b.id, createBuildingIcon(b.type, minRent, false));
@@ -222,35 +276,108 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
   }, [buildings, filtering, matchedBuildingIds, condition]);
 
   const userIcon = useMemo(() => createUserIcon(), []);
+  const destIcon = useMemo(() => createDestIcon(), []);
+
+  // 道案内を開始
+  const handleNavigate = useCallback(
+    async (building: Building) => {
+      setNavTarget(building);
+      setNavLoading(true);
+      setNavError(null);
+      setRoute(null);
+      setFollowUser(false);
+
+      try {
+        const result = await fetchWalkingRoute(
+          latitude,
+          longitude,
+          building.lat,
+          building.lng
+        );
+        setRoute(result);
+      } catch {
+        setNavError("ルートを取得できませんでした");
+      } finally {
+        setNavLoading(false);
+      }
+    },
+    [latitude, longitude]
+  );
+
+  // 道案内を終了
+  const handleCancelNav = useCallback(() => {
+    setNavTarget(null);
+    setRoute(null);
+    setNavError(null);
+    setFollowUser(true);
+  }, []);
+
+  const navigating = navTarget !== null;
 
   return (
     <div className="flex flex-col h-full">
-      {/* 検索パネル */}
-      <SearchPanel
-        condition={condition}
-        onChange={setCondition}
-        matchCount={matchCount}
-        totalCount={buildings.length}
-      />
+      {/* ナビゲーションバー（道案内中） */}
+      {navigating && (
+        <div className="bg-blue-600 text-white px-4 py-3 flex-shrink-0 z-20">
+          <div className="flex items-center justify-between">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-blue-200">道案内中</p>
+              <p className="font-bold text-sm truncate">{navTarget.name}</p>
+              {navLoading && (
+                <p className="text-xs text-blue-200 mt-0.5">ルートを検索中...</p>
+              )}
+              {navError && (
+                <p className="text-xs text-red-200 mt-0.5">{navError}</p>
+              )}
+              {route && (
+                <div className="flex gap-3 mt-1">
+                  <span className="text-sm font-medium">
+                    {formatDistance(route.distanceMeters)}
+                  </span>
+                  <span className="text-sm font-medium">
+                    {formatDuration(route.durationSeconds)}
+                  </span>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={handleCancelNav}
+              className="ml-3 px-3 py-1.5 bg-white/20 rounded-full text-xs font-medium hover:bg-white/30 transition-colors"
+            >
+              終了
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* フィルターバー */}
-      <div className="bg-white/95 backdrop-blur-sm border-b px-3 py-2 flex gap-2 overflow-x-auto flex-shrink-0 z-10">
-        <button
-          onClick={() => setFollowUser(!followUser)}
-          className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-            followUser
-              ? "bg-blue-600 text-white"
-              : "bg-gray-100 text-gray-600"
-          }`}
-        >
-          {followUser ? "追従中" : "追従OFF"}
-        </button>
-        {filtering && (
-          <span className="px-3 py-1 text-xs text-orange-600 font-medium">
-            {matchCount}件ヒット / {buildings.length}件中
-          </span>
-        )}
-      </div>
+      {/* 検索パネル（道案内中は非表示） */}
+      {!navigating && (
+        <>
+          <SearchPanel
+            condition={condition}
+            onChange={setCondition}
+            matchCount={matchCount}
+            totalCount={buildings.length}
+          />
+          <div className="bg-white/95 backdrop-blur-sm border-b px-3 py-2 flex gap-2 overflow-x-auto flex-shrink-0 z-10">
+            <button
+              onClick={() => setFollowUser(!followUser)}
+              className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
+                followUser
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-100 text-gray-600"
+              }`}
+            >
+              {followUser ? "追従中" : "追従OFF"}
+            </button>
+            {filtering && (
+              <span className="px-3 py-1 text-xs text-orange-600 font-medium">
+                {matchCount}件ヒット / {buildings.length}件中
+              </span>
+            )}
+          </div>
+        </>
+      )}
 
       {/* 地図 */}
       <div className="flex-1 relative">
@@ -268,8 +395,40 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
           <MapFollower
             lat={latitude}
             lng={longitude}
-            shouldFollow={followUser}
+            shouldFollow={followUser && !navigating}
           />
+
+          {/* ルート全体をフィット */}
+          {route && <RouteFitter route={route} />}
+
+          {/* ルート線 */}
+          {route && (
+            <Polyline
+              positions={route.coordinates}
+              pathOptions={{
+                color: "#2563eb",
+                weight: 5,
+                opacity: 0.8,
+                dashArray: "10, 6",
+              }}
+            />
+          )}
+
+          {/* 目的地マーカー */}
+          {navTarget && (
+            <Marker position={[navTarget.lat, navTarget.lng]} icon={destIcon}>
+              <Popup>
+                <div className="text-center">
+                  <p className="font-bold text-sm">{navTarget.name}</p>
+                  {route && (
+                    <p className="text-xs text-gray-500">
+                      {formatDistance(route.distanceMeters)} / {formatDuration(route.durationSeconds)}
+                    </p>
+                  )}
+                </div>
+              </Popup>
+            </Marker>
+          )}
 
           {/* ユーザー位置の精度範囲 */}
           {accuracy && (
@@ -307,15 +466,19 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
               icon={buildingIcons.get(building.id)!}
             >
               <Popup maxWidth={320} minWidth={260}>
-                <BuildingPopup building={building} condition={condition} />
+                <BuildingPopup
+                  building={building}
+                  condition={condition}
+                  onNavigate={handleNavigate}
+                />
               </Popup>
             </Marker>
           ))}
         </MapContainer>
       </div>
 
-      {/* 統計バー */}
-      {stats && (
+      {/* 統計バー（道案内中は非表示） */}
+      {!navigating && stats && (
         <div className="bg-white/95 backdrop-blur-sm border-t px-4 py-3 flex-shrink-0">
           <div className="flex items-center justify-between text-xs">
             <div className="text-center">
@@ -347,7 +510,7 @@ export default function RentMap({ latitude, longitude, accuracy }: RentMapProps)
       )}
 
       {/* 条件に合致する物件がない場合 */}
-      {filtering && matchCount === 0 && (
+      {!navigating && filtering && matchCount === 0 && (
         <div className="bg-orange-50 border-t border-orange-200 px-4 py-2 flex-shrink-0">
           <p className="text-xs text-orange-700 text-center">
             この条件に合致する物件が周辺にありません。条件を緩めてみてください。

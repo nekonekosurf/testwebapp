@@ -58,16 +58,24 @@ export const DEFAULT_CONDITION: SearchCondition = {
   goodSunlight: false,
 };
 
-const LAYOUT_BASE_AREA: Record<string, number> = {
-  "1R": 18,
-  "1K": 22,
-  "1DK": 28,
-  "1LDK": 38,
-  "2K": 32,
-  "2DK": 42,
-  "2LDK": 55,
-  "3LDK": 68,
-  "3SLDK": 75,
+// 間取りごとの面積範囲（min, typical, max）
+const LAYOUT_AREA_RANGE: Record<string, { min: number; typical: number; max: number }> = {
+  "1R":    { min: 15, typical: 20, max: 25 },
+  "1K":    { min: 18, typical: 23, max: 28 },
+  "1DK":   { min: 25, typical: 30, max: 35 },
+  "1LDK":  { min: 30, typical: 40, max: 50 },
+  "2K":    { min: 28, typical: 35, max: 42 },
+  "2DK":   { min: 35, typical: 45, max: 55 },
+  "2LDK":  { min: 50, typical: 60, max: 75 },
+  "3LDK":  { min: 60, typical: 70, max: 85 },
+  "3SLDK": { min: 70, typical: 80, max: 95 },
+};
+
+// 建物タイプ別に選ばれる間取り
+const LAYOUTS_BY_TYPE: Record<Building["type"], string[]> = {
+  apartment: ["1R", "1K", "1DK", "2K", "2DK"],
+  mansion:   ["1DK", "1LDK", "2DK", "2LDK", "3LDK"],
+  tower:     ["1LDK", "2LDK", "3LDK", "3SLDK"],
 };
 
 const BUILDING_NAMES_MANSION = [
@@ -263,15 +271,16 @@ export function generateNearbyBuildings(
     const suffixIndex = Math.floor(random() * LOCATION_SUFFIXES.length);
     const name = `${namePool[nameIndex]}${LOCATION_SUFFIXES[suffixIndex]}`;
 
-    const layouts = Object.keys(LAYOUT_BASE_AREA);
+    const availableLayouts = LAYOUTS_BY_TYPE[type];
     const unitCount = type === "tower" ? 4 : type === "mansion" ? 3 : 2;
     const units: RentalUnit[] = [];
 
     for (let u = 0; u < unitCount; u++) {
-      const layoutIndex = Math.floor(random() * layouts.length);
-      const layout = layouts[layoutIndex];
-      const baseArea = LAYOUT_BASE_AREA[layout];
-      const area = Math.round(baseArea + (random() - 0.5) * 8);
+      const layoutIndex = Math.floor(random() * availableLayouts.length);
+      const layout = availableLayouts[layoutIndex];
+      const range = LAYOUT_AREA_RANGE[layout];
+      // 面積を範囲内でランダム生成
+      const area = Math.round(range.min + random() * (range.max - range.min));
       const floor = Math.min(Math.floor(random() * floors) + 1, floors);
       const rent = estimateRent(area, floor, floors, yearBuilt, type, baseRate);
       const managementFee =

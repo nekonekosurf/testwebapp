@@ -14,9 +14,10 @@ import FloorPlan from "./FloorPlan";
 interface BuildingPopupProps {
   building: Building;
   condition?: SearchCondition;
+  onNavigate?: (building: Building) => void;
 }
 
-export default function BuildingPopup({ building, condition }: BuildingPopupProps) {
+export default function BuildingPopup({ building, condition, onNavigate }: BuildingPopupProps) {
   const currentYear = new Date().getFullYear();
   const age = currentYear - building.yearBuilt;
   const cond = condition ?? DEFAULT_CONDITION;
@@ -128,6 +129,20 @@ export default function BuildingPopup({ building, condition }: BuildingPopupProp
           );
         })}
       </div>
+      {/* 道案内ボタン */}
+      {onNavigate && (
+        <button
+          type="button"
+          onClick={() => onNavigate(building)}
+          className="w-full mt-2 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-1.5"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          ここへ道案内
+        </button>
+      )}
       <p className="text-xs text-gray-400 mt-2 italic">
         ※推定値です。実際の家賃とは異なる場合があります
       </p>
